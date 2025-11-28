@@ -1,11 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { HardDrive, Trash2, Plus, RefreshCw, Upload } from 'lucide-react';
+import { HardDrive, Trash2, Plus, RefreshCw, Upload, X } from 'lucide-react';
 import { diskAPI } from '../services/api';
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
 
 export default function DiskList() {
   const [disks, setDisks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadFileName, setUploadFileName] = useState('');
+  const [showUploadModal, setShowUploadModal] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newDisk, setNewDisk] = useState({ name: '', size: 20, format: 'qcow2' });
   const fileInputRef = React.useRef(null);
@@ -39,20 +50,55 @@ export default function DiskList() {
 
   async function handleFileSelect(event) {
     const file = event.target.files?.[0];
-    if (!file || !file.name.match(/\.(qcow2|raw|vmdk|vdi)$/i)) {
+    if (!file) return;
+
+    if (!file.name.match(/\.(qcow2|raw|vmdk|vdi)$/i)) {
       alert('Per favore seleziona un file disco valido (.qcow2, .raw, .vmdk, .vdi)');
       return;
     }
 
+    setShowUploadModal(true);
+    setUploadFileName(file.name);
+    setUploadProgress(0);
     setUploading(true);
+
     try {
-      const response = await diskAPI.upload(file);
-      setDisks([...disks, response.data.disk]);
-      alert('Disco caricato con successo!');
-      fileInputRef.current.value = '';
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const xhr = new XMLHttpRequest();
+      
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const percentComplete = (e.loaded / e.total) * 100;
+          setUploadProgress(Math.round(percentComplete));
+        }
+      });
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status === 201) {
+          const response = JSON.parse(xhr.responseText);
+          setDisks([...disks, response.disk]);
+          setUploadProgress(100);
+          setTimeout(() => {
+            setShowUploadModal(false);
+            setUploading(false);
+            fileInputRef.current.value = '';
+          }, 1500);
+        }
+      });
+
+      xhr.addEventListener('error', () => {
+        alert('Errore durante il caricamento');
+        setShowUploadModal(false);
+        setUploading(false);
+      });
+
+      xhr.open('POST', '/api/disks/upload');
+      xhr.send(formData);
     } catch (error) {
-      alert('Errore durante il caricamento: ' + error.message);
-    } finally {
+      alert('Errore: ' + error.message);
+      setShowUploadModal(false);
       setUploading(false);
     }
   }
@@ -106,6 +152,51 @@ export default function DiskList() {
         </div>
       </div>
 
+      {/* Upload Progress Modal */}
+      {showUploadModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="card max-w-md w-full">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-2xl font-bold">Caricamento Disco</h3>
+              {!uploading && (
+                <button
+                  onClick={() => setShowUploadModal(false)}
+                  className="text-gray-400 hover:text-white"
+                >
+                  <X size={24} />
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <p className="text-sm text-gray-400 mb-2">File: {uploadFileName}</p>
+                <div className="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
+                  <div
+                    className="bg-gradient-to-r from-blue-500 to-blue-400 h-full transition-all duration-300 ease-out rounded-full"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+                <p className="text-right text-sm text-gray-300 mt-2">{uploadProgress}%</p>
+              </div>
+
+              {uploadProgress === 100 && (
+                <div className="bg-green-900 border border-green-600 rounded-lg p-3 text-center">
+                  <p className="text-green-300 font-semibold">✅ Caricamento completato!</p>
+                </div>
+              )}
+
+              {uploading && (
+                <p className="text-sm text-gray-400 text-center animate-pulse">
+                  Caricamento in corso...
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Disk Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="card max-w-md w-full">
@@ -164,6 +255,7 @@ export default function DiskList() {
         </div>
       )}
 
+      {/* Disks List */}
       <div className="grid gap-4">
         {loading ? (
           <p className="text-gray-400">Loading disks...</p>

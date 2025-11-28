@@ -1,5 +1,6 @@
 node_modules/
 vms/
+disks/
 .env.local
 .DS_Store
 *.log

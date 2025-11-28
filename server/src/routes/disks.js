@@ -1,14 +1,24 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
+import fs from 'fs';
 import * as diskController from '../controllers/diskController.js';
 
 const router = express.Router();
 
+// Ensure disks storage directory exists
+function ensureStorageDir() {
+  const diskPath = process.env.DISKS_STORAGE_PATH || '/tmp/qemu-disks';
+  if (!fs.existsSync(diskPath)) {
+    fs.mkdirSync(diskPath, { recursive: true });
+  }
+  return diskPath;
+}
+
 // Multer configuration for disk uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const diskPath = process.env.DISKS_STORAGE_PATH || '/tmp/qemu-disks';
+    const diskPath = ensureStorageDir();
     cb(null, diskPath);
   },
   filename: (req, file, cb) => {
