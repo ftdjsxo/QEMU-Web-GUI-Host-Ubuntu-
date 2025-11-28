@@ -202,11 +202,21 @@ export default function VMDetailsModal({ vm, onClose, onUpdate }) {
               Dischi Allegati ({vm.disks?.length || 0})
             </h3>
 
+            {/* Info box for system images */}
+            <div className="bg-blue-900 border border-blue-600 rounded-lg p-3 text-sm text-blue-200 mb-4">
+              💡 <strong>Immagini di Sistema:</strong> Se hai un'immagine QCOW2 preconfigurata (Kali, Ubuntu, ecc.), caricala qui come primo disco per farla bootare direttamente!
+            </div>
+
             {vm.disks && vm.disks.length > 0 && (
               <div className="space-y-2 mb-4">
                 {vm.disks.map((disk, idx) => (
                   <div key={idx} className="bg-gray-700 p-3 rounded-lg flex justify-between items-center">
-                    <span className="text-sm break-all">{disk.path}</span>
+                    <div>
+                      <span className="text-sm break-all">{disk.path}</span>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {idx === 0 ? '🔴 Boot Disk' : '💾 Data Disk'}
+                      </p>
+                    </div>
                     <button
                       onClick={() => detachDisk(disk.path)}
                       className="btn bg-red-600 hover:bg-red-700 text-white text-sm"
@@ -222,7 +232,7 @@ export default function VMDetailsModal({ vm, onClose, onUpdate }) {
             <div className="space-y-2">
               {availableDisks.length === 0 ? (
                 <div className="bg-yellow-900 border border-yellow-600 rounded-lg p-3 text-sm text-yellow-200">
-                  📢 Nessun disco disponibile.
+                  📢 Nessun disco disponibile. Vai a "Virtual Disks" per caricarne uno.
                 </div>
               ) : (
                 <>

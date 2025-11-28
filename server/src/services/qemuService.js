@@ -24,7 +24,28 @@ class QemuService {
   loadVMsFromDB() {
     try {
       const vms = db.getAllVMs();
-      console.log(`🖥️  Caricate ${vms.length} VM dal database`);
+      console.log(`🖥️ Caricate ${vms.length} VM dal database`);
+      
+      // Sincronizza lo stato: se una VM è marcata "running" ma il processo non esiste, marcala come "stopped"
+      vms.forEach(vm => {
+        if (vm.status === 'running' && vm.pid) {
+          // Controlla se il processo esiste ancora
+          try {
+            // Usa process.kill con signal 0 per testare se il processo esiste
+            process.kill(vm.pid, 0);
+            console.log(`✅ VM ${vm.name} è effettivamente in esecuzione (PID: ${vm.pid})`);
+          } catch (e) {
+            // Il processo non esiste più
+            console.log(`⚠️ VM ${vm.name} era running ma il processo ${vm.pid} non esiste. Marco come stopped.`);
+            db.updateVMStatus(vm.id, 'stopped');
+            db.updateVMPID(vm.id, null);
+          }
+        } else if (vm.status === 'running' && !vm.pid) {
+          // VM marcata running ma senza PID -> è stata killata
+          console.log(`⚠️ VM ${vm.name} era running ma no PID salvato. Marco come stopped.`);
+          db.updateVMStatus(vm.id, 'stopped');
+        }
+      });
     } catch (error) {
       console.warn('Error loading VMs from DB:', error.message);
     }
@@ -84,29 +105,48 @@ class QemuService {
       throw new Error('VM is already running');
     }
 
-    // Build QEMU command
-    const qemuCmd = this.buildQemuCommand(vm);
+    // Build QEMU arguments
+    const qemuArgs = this.buildQemuCommand(vm);
+    const qemuCmdString = this.buildQemuCommandString(vm);
     
     try {
-      const process = spawn('bash', ['-c', qemuCmd]);
-      this.processes.set(vmId, process);
+      // Lancia QEMU direttamente, non tramite bash
+      const qemuProcess = spawn(process.env.QEMU_BIN || '/usr/bin/qemu-system-x86_64', qemuArgs);
       
-      process.on('error', (err) => {
-        console.error(`QEMU process error for ${vmId}:`, err);
+      this.processes.set(vmId, {
+        process: qemuProcess,
+        pid: qemuProcess.pid
+      });
+      
+      qemuProcess.on('error', (err) => {
+        console.error(`❌ QEMU process error for ${vmId}:`, err);
         db.updateVMStatus(vmId, 'stopped');
       });
 
-      process.on('close', (code) => {
-        console.log(`QEMU process for ${vmId} closed with code ${code}`);
+      qemuProcess.on('close', (code) => {
+        console.log(`🛑 QEMU process for ${vmId} closed with code ${code}`);
         db.updateVMStatus(vmId, 'stopped');
         this.processes.delete(vmId);
       });
 
+      // Log stdout/stderr di QEMU
+      qemuProcess.stdout?.on('data', (data) => {
+        const output = data.toString().trim();
+        if (output) console.log(`[${vmId}] ${output}`);
+      });
+
+      qemuProcess.stderr?.on('data', (data) => {
+        const output = data.toString().trim();
+        if (output) console.warn(`[${vmId}] ${output}`);
+      });
+
       const startedAt = new Date().toISOString();
       db.updateVMStatus(vmId, 'running', startedAt);
+      db.updateVMPID(vmId, qemuProcess.pid); // Salva il PID nel database
       
-      const vm = db.getVM(vmId);
-      return { vm, command: qemuCmd };
+      const updatedVm = db.getVM(vmId);
+      console.log(`✅ VM ${vm.name} (${vmId}) started with PID ${qemuProcess.pid}`);
+      return { vm: updatedVm, command: qemuCmdString, pid: qemuProcess.pid };
     } catch (error) {
       throw new Error(`Failed to start VM: ${error.message}`);
     }
@@ -118,15 +158,67 @@ class QemuService {
       throw new Error(`VM ${vmId} not found`);
     }
 
-    const process = this.processes.get(vmId);
-    if (process) {
-      process.kill('SIGTERM');
+    const processInfo = this.processes.get(vmId);
+    if (processInfo) {
+      try {
+        // Prima prova a killare il processo
+        process.kill(processInfo.pid, 'SIGTERM');
+        console.log(`📤 Sent SIGTERM to VM ${vmId} (PID: ${processInfo.pid})`);
+        
+        // Aspetta un po' che si fermi
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Se è ancora vivo, forza SIGKILL
+        try {
+          process.kill(processInfo.pid, 0); // Test se il processo esiste
+          process.kill(processInfo.pid, 'SIGKILL');
+          console.log(`🔴 Sent SIGKILL to VM ${vmId} (PID: ${processInfo.pid})`);
+        } catch (e) {
+          // Processo già morto
+          console.log(`✅ VM ${vmId} stopped gracefully`);
+        }
+      } catch (error) {
+        console.error(`Error stopping VM ${vmId}:`, error.message);
+      }
+      
       this.processes.delete(vmId);
     }
 
     db.updateVMStatus(vmId, 'stopped');
+    console.log(`🛑 VM ${vm.name} marked as stopped`);
     
     return { message: 'VM stopped successfully' };
+  }
+
+  // Parse QEMU command string into array of arguments
+  parseQemuArgs(qemuCmd) {
+    // Rimuovi il percorso di qemu-system-x86_64 dall'inizio
+    const args = [];
+    const parts = qemuCmd.split(/\s+/);
+    
+    // Skip qemu-system-x86_64
+    for (let i = 1; i < parts.length; i++) {
+      let arg = parts[i];
+      
+      // Gestisci gli argomenti con quote
+      if (arg.startsWith('"') && !arg.endsWith('"')) {
+        // Accumula le parti finché non trovo la chiusura
+        let j = i;
+        while (j < parts.length && !parts[j].endsWith('"')) {
+          j++;
+        }
+        if (j < parts.length) {
+          arg = parts.slice(i, j + 1).join(' ').replace(/"/g, '');
+          i = j;
+        }
+      } else {
+        arg = arg.replace(/"/g, '');
+      }
+      
+      if (arg.trim()) args.push(arg.trim());
+    }
+    
+    return args;
   }
 
   async updateVMResources(vmId, config) {
@@ -200,28 +292,48 @@ class QemuService {
   }
 
   buildQemuCommand(vm) {
-    const qemuBin = process.env.QEMU_BIN || '/usr/bin/qemu-system-x86_64';
+    const args = [];
     
-    let cmd = `${qemuBin}`;
-    cmd += ` -m ${vm.memory}`;
-    cmd += ` -smp ${vm.cpus}`;
-    cmd += ` -name "${vm.name}"`;
-    cmd += ` -vnc 127.0.0.1:${vm.vnc_port - 5900}`;
-    cmd += ` -monitor stdio`;
+    args.push(`-m`, `${vm.memory}`);
+    args.push(`-smp`, `${vm.cpus}`);
+    args.push(`-name`, vm.name);
+    args.push(`-vnc`, `127.0.0.1:${vm.vnc_port - 5900}`);
+    args.push(`-monitor`, `stdio`);
+    args.push(`-enable-kvm`);
     
-    // Aggiungi dischi
+    // Aggiungi dischi usando controller IDE (universalmente compatibile)
     if (vm.disks && vm.disks.length > 0) {
       vm.disks.forEach((disk, index) => {
-        cmd += ` -drive file="${disk.path}",format=qcow2,if=virtio`;
+        if (index < 4) {
+          args.push(`-drive`);
+          args.push(`file=${disk.path},format=qcow2,if=ide,index=${index}`);
+        }
       });
     }
 
-    // Aggiungi ISO
+    // Aggiungi ISO come cdrom secondario
     if (vm.iso) {
-      cmd += ` -cdrom "${vm.iso}"`;
+      args.push(`-cdrom`, vm.iso);
     }
 
-    return cmd;
+    // Imposta boot order
+    if (vm.disks && vm.disks.length > 0) {
+      args.push(`-boot`, `c`); // Boot da hard disk
+    } else if (vm.iso) {
+      args.push(`-boot`, `d`); // Boot da cdrom
+    }
+
+    return args;
+  }
+
+  // Costruisci il comando QEMU come stringa (per logging)
+  buildQemuCommandString(vm) {
+    const qemuBin = process.env.QEMU_BIN || '/usr/bin/qemu-system-x86_64';
+    const args = this.buildQemuCommand(vm);
+    return qemuBin + ' ' + args.map(arg => {
+      if (arg.includes(' ')) return `"${arg}"`;
+      return arg;
+    }).join(' ');
   }
 
   getVMDetails(vmId) {

@@ -23,10 +23,18 @@ class DatabaseService {
         status TEXT DEFAULT 'stopped',
         vnc_port INTEGER,
         iso TEXT,
+        pid INTEGER,
         created_at TEXT NOT NULL,
         started_at TEXT
       )
     `);
+
+    // Aggiungi la colonna pid se non esiste (migration)
+    try {
+      this.db.exec(`ALTER TABLE vms ADD COLUMN pid INTEGER`);
+    } catch (e) {
+      // Colonna già esiste
+    }
 
     // Disks table
     this.db.exec(`
@@ -79,6 +87,13 @@ class DatabaseService {
       UPDATE vms SET status = ?, started_at = ? WHERE id = ?
     `);
     stmt.run(status, startedAt, vmId);
+  }
+
+  updateVMPID(vmId, pid) {
+    const stmt = this.db.prepare(`
+      UPDATE vms SET pid = ? WHERE id = ?
+    `);
+    stmt.run(pid, vmId);
   }
 
   updateVMISO(vmId, isoPath) {
