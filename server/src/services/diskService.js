@@ -3,15 +3,15 @@ import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import db from './database.js';
 
 const execAsync = promisify(exec);
 
 class DiskService {
   constructor() {
-    this.disks = new Map();
     this.disksStoragePath = process.env.DISKS_STORAGE_PATH || '/tmp/qemu-disks';
     this.ensureStoragePath();
-    this.scanDisks();
+    this.loadDisksFromDB();
   }
 
   ensureStoragePath() {
@@ -20,27 +20,12 @@ class DiskService {
     }
   }
 
-  scanDisks() {
+  loadDisksFromDB() {
     try {
-      const files = fs.readdirSync(this.disksStoragePath);
-      files.forEach((file) => {
-        if (file.match(/\.(qcow2|raw|vmdk|vdi)$/i)) {
-          const diskPath = path.join(this.disksStoragePath, file);
-          const stats = fs.statSync(diskPath);
-          const disk = {
-            id: uuidv4(),
-            name: file,
-            path: diskPath,
-            size: Math.round(stats.size / (1024 * 1024 * 1024)), // GB
-            format: file.split('.').pop().toLowerCase(),
-            uploadedAt: new Date(stats.birthtime).toISOString(),
-            status: 'ready',
-          };
-          this.disks.set(disk.id, disk);
-        }
-      });
+      const disks = db.getAllDisks();
+      console.log(`📀 Caricati ${disks.length} dischi dal database`);
     } catch (error) {
-      console.warn('Error scanning disks:', error.message);
+      console.warn('Error loading disks from DB:', error.message);
     }
   }
 
@@ -52,10 +37,9 @@ class DiskService {
       format: config.format || 'qcow2',
       path: path.join(this.disksStoragePath, `${config.name}.${config.format || 'qcow2'}`),
       createdAt: new Date().toISOString(),
+      uploadedAt: new Date().toISOString(),
       status: 'creating',
     };
-
-    this.disks.set(disk.id, disk);
 
     try {
       // Create disk using qemu-img
@@ -67,6 +51,9 @@ class DiskService {
       disk.status = 'ready';
       disk.createdAtCompleted = new Date().toISOString();
       
+      // Save to database
+      db.insertDisk(disk);
+      
       return disk;
     } catch (error) {
       disk.status = 'error';
@@ -76,7 +63,7 @@ class DiskService {
   }
 
   async deleteDisk(diskId) {
-    const disk = this.disks.get(diskId);
+    const disk = db.getDisk(diskId);
     if (!disk) {
       throw new Error(`Disk ${diskId} not found`);
     }
@@ -85,16 +72,16 @@ class DiskService {
       fs.unlinkSync(disk.path);
     }
 
-    this.disks.delete(diskId);
+    db.deleteDisk(diskId);
     return { message: 'Disk deleted successfully' };
   }
 
   async listDisks() {
-    return Array.from(this.disks.values());
+    return db.getAllDisks();
   }
 
   async getDiskInfo(diskId) {
-    const disk = this.disks.get(diskId);
+    const disk = db.getDisk(diskId);
     if (!disk) {
       throw new Error(`Disk ${diskId} not found`);
     }
@@ -126,7 +113,10 @@ class DiskService {
     try {
       const stats = fs.statSync(filePath);
       disk.size = Math.round(stats.size / (1024 * 1024 * 1024)); // GB
-      this.disks.set(disk.id, disk);
+      
+      // Save to database
+      db.insertDisk(disk);
+      
       return disk;
     } catch (error) {
       throw new Error(`Failed to upload disk: ${error.message}`);

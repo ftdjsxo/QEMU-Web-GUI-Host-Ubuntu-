@@ -1,4 +1,5 @@
 node_modules/
+isos/
 vms/
 disks/
 .env.local

@@ -1,15 +1,25 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import * as isoController from '../controllers/isoController.js';
 
 const router = express.Router();
 
+// Ensure ISO storage directory exists
+function ensureStorageDir() {
+  const isoPath = process.env.ISO_STORAGE_PATH || '/tmp/qemu-isos';
+  if (!fs.existsSync(isoPath)) {
+    fs.mkdirSync(isoPath, { recursive: true });
+  }
+  return isoPath;
+}
+
 // Configure multer for ISO uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const isoPath = process.env.ISO_STORAGE_PATH || '/tmp/qemu-isos';
+    const isoPath = ensureStorageDir();
     cb(null, isoPath);
   },
   filename: (req, file, cb) => {

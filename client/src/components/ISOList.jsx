@@ -1,12 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { Disc3, Trash2, Plus, RefreshCw, Upload } from 'lucide-react';
+import { Disc3, Trash2, RefreshCw, Upload, X } from 'lucide-react';
 import { isoAPI } from '../services/api';
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
 
 export default function ISOList() {
   const [isos, setISOs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [fileInput, setFileInput] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadFileName, setUploadFileName] = useState('');
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const fileInputRef = React.useRef(null);
 
   useEffect(() => {
     loadISOs();
@@ -32,18 +43,48 @@ export default function ISOList() {
       return;
     }
 
+    setShowUploadModal(true);
+    setUploadFileName(file.name);
+    setUploadProgress(0);
     setUploading(true);
+
     try {
-      const response = await isoAPI.upload(file);
-      setISOs([...isos, response.data.iso]);
-      alert('ISO caricato con successo!');
-      if (fileInput) {
-        fileInput.value = '';
-      }
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const xhr = new XMLHttpRequest();
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const percentComplete = (e.loaded / e.total) * 100;
+          setUploadProgress(Math.round(percentComplete));
+        }
+      });
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status === 201) {
+          const response = JSON.parse(xhr.responseText);
+          setISOs([...isos, response.iso]);
+          setUploadProgress(100);
+          setTimeout(() => {
+            setShowUploadModal(false);
+            setUploading(false);
+            fileInputRef.current.value = '';
+          }, 1500);
+        }
+      });
+
+      xhr.addEventListener('error', () => {
+        alert('Errore durante il caricamento');
+        setShowUploadModal(false);
+        setUploading(false);
+      });
+
+      xhr.open('POST', '/api/isos/upload');
+      xhr.send(formData);
     } catch (error) {
-      console.error('Error uploading ISO:', error);
-      alert('Errore durante il caricamento: ' + error.message);
-    } finally {
+      alert('Errore: ' + error.message);
+      setShowUploadModal(false);
       setUploading(false);
     }
   }
@@ -74,27 +115,69 @@ export default function ISOList() {
             <RefreshCw size={18} />
             Aggiorna
           </button>
-          <label className="btn btn-primary flex items-center gap-2 cursor-pointer">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="btn btn-primary flex items-center gap-2"
+            disabled={uploading}
+          >
             <Upload size={18} />
             Carica ISO
-            <input
-              ref={el => setFileInput(el)}
-              type="file"
-              accept=".iso"
-              onChange={handleFileSelect}
-              disabled={uploading}
-              className="hidden"
-            />
-          </label>
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".iso"
+            onChange={handleFileSelect}
+            style={{ display: 'none' }}
+          />
         </div>
       </div>
 
-      {uploading && (
-        <div className="bg-blue-900 border border-blue-600 rounded-lg p-4">
-          <p className="text-sm text-blue-200">📤 Upload in corso...</p>
+      {/* Upload Progress Modal */}
+      {showUploadModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="card max-w-md w-full">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-2xl font-bold">Caricamento ISO</h3>
+              {!uploading && (
+                <button
+                  onClick={() => setShowUploadModal(false)}
+                  className="text-gray-400 hover:text-white"
+                >
+                  <X size={24} />
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <p className="text-sm text-gray-400 mb-2">File: {uploadFileName}</p>
+                <div className="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
+                  <div
+                    className="bg-gradient-to-r from-purple-500 to-purple-400 h-full transition-all duration-300 ease-out rounded-full"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+                <p className="text-right text-sm text-gray-300 mt-2">{uploadProgress}%</p>
+              </div>
+
+              {uploadProgress === 100 && (
+                <div className="bg-green-900 border border-green-600 rounded-lg p-3 text-center">
+                  <p className="text-green-300 font-semibold">✅ Caricamento completato!</p>
+                </div>
+              )}
+
+              {uploading && (
+                <p className="text-sm text-gray-400 text-center animate-pulse">
+                  Caricamento in corso...
+                </p>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
+      {/* ISO List */}
       <div className="grid gap-4">
         {loading ? (
           <p className="text-gray-400">Caricamento ISO...</p>
@@ -127,12 +210,4 @@ export default function ISOList() {
       </div>
     </div>
   );
-}
-
-function formatBytes(bytes) {
-  if (bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
 }

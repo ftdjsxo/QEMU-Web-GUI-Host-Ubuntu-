@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>noVNC - QEMU Manager</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            height: 100vh;
+            background: #1a1a1a;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        #top_bar {
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #444;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        
+        #status {
+            flex: 1;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 8px;
+        }
+        
+        button {
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        
+        button:hover {
+            background: rgba(255,255,255,0.3);
+            border-color: rgba(255,255,255,0.5);
+        }
+        
+        button:active {
+            background: rgba(255,255,255,0.4);
+        }
+        
+        #screen {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #0a0a0a;
+        }
+        
+        canvas {
+            max-width: 100%;
+            max-height: 100%;
+        }
+        
+        .loading {
+            color: #888;
+            font-size: 14px;
+            text-align: center;
+        }
+        
+        .connection-error {
+            color: #ff6b6b;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .info-text {
+            font-size: 12px;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <div id="top_bar">
+        <div id="status">🔗 Connessione in corso...</div>
+        <div class="button-group">
+            <button id="sendCtrlAltDelButton" title="Invia Ctrl+Alt+Del">⌨️ Ctrl+Alt+Del</button>
+            <button id="fullscreenButton" title="Schermo intero">🖥️ Fullscreen</button>
+        </div>
+    </div>
+    <div id="screen">
+        <div class="loading">
+            <p>Caricamento console VNC...</p>
+            <p class="info-text" style="margin-top: 10px;">Assicurati che websockify sia in esecuzione:</p>
+            <p class="info-text" style="font-family: monospace; margin-top: 5px;">websockify 6080 127.0.0.1:[VNC_PORT]</p>
+        </div>
+    </div>
+
+    <script type="module">
+        import RFB from './novnc/core/rfb.js';
+
+        let rfb;
+        let desktopName = "QEMU VM";
+
+        // Ottieni i parametri dalla query string
+        const urlParams = new URLSearchParams(window.location.search);
+        const vmId = urlParams.get('vmId') || 'unknown';
+        const vncPort = urlParams.get('port') || '5900';
+
+        const statusEl = document.getElementById('status');
+        const screenEl = document.getElementById('screen');
+
+        function updateStatus(msg) {
+            statusEl.textContent = msg;
+            console.log('[VNC]', msg);
+        }
+
+        function connectedToServer() {
+            updateStatus(`✅ Connesso a ${desktopName}`);
+        }
+
+        function disconnectedFromServer(e) {
+            if (e.detail.clean) {
+                updateStatus("❌ Disconnesso");
+            } else {
+                updateStatus("⚠️ Errore di connessione");
+            }
+        }
+
+        function credentialsAreRequired(e) {
+            const password = prompt("Password richiesta:");
+            if (password !== null) {
+                rfb.sendCredentials({ password: password });
+            }
+        }
+
+        function updateDesktopName(e) {
+            desktopName = e.detail.name;
+        }
+
+        function sendCtrlAltDel() {
+            rfb.sendCtrlAltDel();
+            return false;
+        }
+
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {
+                    console.log('Fullscreen non disponibile:', err);
+                });
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        // Connetti ai bottoni
+        document.getElementById('sendCtrlAltDelButton').onclick = sendCtrlAltDel;
+        document.getElementById('fullscreenButton').onclick = toggleFullscreen;
+
+        // Connetti ai tasti della tastiera per fullscreen
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'F11' || (e.ctrlKey && e.shiftKey && e.key === 'f')) {
+                e.preventDefault();
+                toggleFullscreen();
+            }
+        });
+
+        try {
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${wsProtocol}//${window.location.host}/api/vnc/${vmId}?port=${vncPort}`;
+            
+            updateStatus(`🔄 Connessione a ${vmId} (porta ${vncPort})...`);
+            console.log('WebSocket URL:', wsUrl);
+            
+            rfb = new RFB(
+                screenEl,
+                wsUrl,
+                {
+                    credentials: { password: '' },
+                    shared: true,
+                }
+            );
+
+            rfb.addEventListener('connect', connectedToServer);
+            rfb.addEventListener('disconnect', disconnectedFromServer);
+            rfb.addEventListener('credentialsrequired', credentialsAreRequired);
+            rfb.addEventListener('desktopname', updateDesktopName);
+
+            rfb.addEventListener('error', (e) => {
+                console.error('VNC Error:', e.detail);
+                updateStatus(`❌ Errore: ${e.detail.message || 'Connessione fallita'}`);
+                screenEl.innerHTML = `
+                    <div class="connection-error">
+                        <p>❌ Errore di connessione VNC</p>
+                        <p style="margin-top: 10px; font-size: 12px;">
+                            Assicurati che:<br/>
+                            1. La VM sia accesa<br/>
+                            2. Il server VNC sia avviato sulla porta ${vncPort}<br/>
+                            3. La porta sia raggiungibile (127.0.0.1)
+                        </p>
+                        <p style="margin-top: 10px; font-family: monospace; font-size: 11px; color: #aaa;">
+                            ws://${window.location.host}/api/vnc/${vmId}?port=${vncPort}
+                        </p>
+                    </div>
+                `;
+            });
+
+        } catch (error) {
+            console.error('Errore inizializzazione VNC:', error);
+            updateStatus(`❌ Errore: ${error.message}`);
+        }
+    </script>
+</body>
+</html>
