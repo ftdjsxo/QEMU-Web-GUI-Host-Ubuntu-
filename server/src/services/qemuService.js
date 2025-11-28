@@ -105,6 +105,9 @@ class QemuService {
       throw new Error('VM is already running');
     }
 
+    // 🎯 IMPORTANTE: Aggiungi i dischi allegati alla VM prima di buildare il comando QEMU
+    vm.disks = db.getVMDisks(vmId).map(d => ({ path: d.path }));
+
     // Build QEMU arguments
     const qemuArgs = this.buildQemuCommand(vm);
     const qemuCmdString = this.buildQemuCommandString(vm);
@@ -146,6 +149,7 @@ class QemuService {
       
       const updatedVm = db.getVM(vmId);
       console.log(`✅ VM ${vm.name} (${vmId}) started with PID ${qemuProcess.pid}`);
+      console.log(`💾 Dischi allegati: ${vm.disks.length > 0 ? vm.disks.map(d => d.path).join(', ') : 'nessuno'}`);
       return { vm: updatedVm, command: qemuCmdString, pid: qemuProcess.pid };
     } catch (error) {
       throw new Error(`Failed to start VM: ${error.message}`);
